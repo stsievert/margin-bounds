@@ -14,11 +14,11 @@ import numpy.linalg as LA
 
 # Training settings
 parser = argparse.ArgumentParser(description='PyTorch MNIST Example')
-parser.add_argument('--batch-size', type=int, default=64, metavar='N',
+parser.add_argument('--batch-size', type=int, default=128, metavar='N',
                     help='input batch size for training (default: 64)')
 parser.add_argument('--test-batch-size', type=int, default=1000, metavar='N',
                     help='input batch size for testing (default: 1000)')
-parser.add_argument('--epochs', type=int, default=10, metavar='N',
+parser.add_argument('--epochs', type=int, default=20, metavar='N',
                     help='number of epochs to train (default: 10)')
 parser.add_argument('--lr', type=float, default=0.01, metavar='LR',
                     help='learning rate (default: 0.01)')
@@ -82,6 +82,11 @@ if args.cuda:
     model.cuda()
 
 optimizer = optim.SGD(model.parameters(), lr=args.lr, momentum=args.momentum)
+optimizer.steps = 0
+max_iter = args.epochs * 50e3 / args.batch_size
+_inspect = np.logspace(np.log10(4), np.log10(max_iter), num=20, dtype=int)
+_inspect = list(_inspect.astype(int))
+print(_inspect)
 
 def train(epoch):
     model.train()
@@ -94,10 +99,13 @@ def train(epoch):
         loss = F.nll_loss(output, target)
         loss.backward()
         optimizer.step()
+        optimizer.steps += 1
         if batch_idx % args.log_interval == 0:
             print('Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.6f}'.format(
-                epoch, batch_idx * len(data), len(train_loader.dataset),
+                optimizer.steps, batch_idx * len(data), len(train_loader.dataset),
                 100. * batch_idx / len(train_loader), loss.data[0]))
+        if optimizer.steps in _inspect:
+            break
 
 def test():
     model.eval()
@@ -122,7 +130,6 @@ def test():
 
 
 def _get_weights(model):
-    global W, weights, matrices
     W = [getattr(model, name) for name in ['conv1', 'conv2', 'fc1', 'fc2']]
     weights = [w.weight.view(w.weight.size()[0], -1) for w in W]
     matrices = [w.cat((w, W.bias), dim=-1) for w, W in zip(weights, W)]
@@ -130,7 +137,7 @@ def _get_weights(model):
 
 
 def stats(model, loader, X_fro_norm):
-    global R, S, T, n, diff, margins
+    global diff, row, i, idx
     margins = torch.Tensor()
     for data, target in loader:
         if args.cuda:
@@ -138,6 +145,7 @@ def stats(model, loader, X_fro_norm):
         data, target = Variable(data, volatile=True), Variable(target)
         output = model(data)
         diff = output.data.max(1, keepdim=True)[0] - output.data
+
         diff = diff[diff > 0].view(diff.size()[0], diff.size()[1] - 1)
         margin = diff.min(1)[0]
         margins = torch.cat((margins, margin))
@@ -145,6 +153,7 @@ def stats(model, loader, X_fro_norm):
     # T = sum_i ||A_i - M_i]^{2/3}_1 / || ||A_i||^{2/3}_2
     # R = T**(3/2) * S
     # Lipschitz constants: relu: 1. max_pooling lipschitz: 1. log-softmax: 1
+    # TODO: calculate margin with *all* data points
     A = _get_weights(model)
     L2norms = [LA.norm(a.data.numpy(), ord=2) for a in A]
     L1norms = [LA.norm(a.data.numpy().flat[:], ord=1) for a in A]
@@ -167,8 +176,9 @@ if __name__ == "__main__":
     for epoch in range(1, args.epochs + 1):
         print("epoch =", epoch)
         train(epoch)
-        datum = {'epoch': epoch, **stats(model, train_loader,
-                                         X_fro_norm), **test()}
+        datum = {'steps': optimizer.steps,
+                 'epochs': optimizer.steps / len(train_loader.dataset),
+                 **stats(model, train_loader, X_fro_norm), **test()}
         data += [datum]
         with open(f'./sims-{args.dataset}.pkl', 'wb') as f:
             pickle.dump(data, f)
